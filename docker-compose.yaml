@@ -1,0 +1,83 @@
+# documentation: https://github.com/outsourc-e/hermes-workspace
+# slogan: Hermes Workspace — Multi-Agent-Orchestrierung (Conductor + Swarm Mode) für den Hermes Agent, self-hosted.
+# category: ai
+# tags: ai, agent, hermes, orchestration, swarm, conductor, multi-agent
+# logo: svgs/hermes-agent.svg
+# port: 3000
+
+# ──────────────────────────────────────────────────────────────────────────
+# Hermes Workspace (outsourc-e) — Coolify-Deployment
+#
+# Zwei Container:
+#   - hermes-agent      : Gateway (:8642) + Dashboard (:9119), das Backend
+#   - hermes-workspace  : die Orchestrierungs-UI (:3000) — Conductor + Swarm
+#
+# Härtung:
+#   1. API_SERVER_KEY + Workspace-Passwort werden von Coolify als 64-Zeichen-
+#      Secrets generiert (SERVICE_PASSWORD_*). Agent + Workspace teilen denselben
+#      API-Key automatisch (gleicher Platzhalter → gleicher Wert).
+#   2. TLS/HTTPS via Coolify-Proxy (SERVICE_FQDN) — kein eigener Proxy, keine
+#      offenen Ports. COOKIE_SECURE + TRUST_PROXY für Betrieb hinter dem Proxy.
+#   3. :latest für den Test — für Produktion auf feste Versionen pinnen.
+#
+# HINWEIS: Das ist eine EIGENSTÄNDIGE Instanz mit eigenem Volume — NICHT dein
+# bestehendes nesquena-Backend. Profile (z.B. Nina) sind hier zunächst nicht
+# vorhanden; zum Testen der Orchestrierung legst du hier Worker-Profile an.
+# ──────────────────────────────────────────────────────────────────────────
+
+services:
+  hermes-agent:
+    image: nousresearch/hermes-agent:latest
+    command: ["gateway", "run"]
+    restart: unless-stopped
+    environment:
+      - HERMES_UID=10010
+      - HERMES_DASHBOARD=1
+      - HERMES_DASHBOARD_HOST=0.0.0.0
+      - HERMES_DASHBOARD_PORT=9119
+      - API_SERVER_ENABLED=true
+      - API_SERVER_HOST=0.0.0.0
+      # Auto-generierter 64-Zeichen-Key. Agent + Workspace teilen ihn (gleicher Name).
+      - API_SERVER_KEY=${SERVICE_PASSWORD_64_HERMESAPI}
+      # LLM-Provider: MINDESTENS EINEN im Coolify "Environment Variables"-Tab setzen
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+    volumes:
+      - hermes-agent-data:/opt/data
+    healthcheck:
+      test: ['CMD-SHELL', 'curl -fsS http://localhost:8642/health && curl -fsS http://localhost:9119/api/status || exit 1']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+
+  hermes-workspace:
+    image: ghcr.io/outsourc-e/hermes-workspace:latest
+    restart: unless-stopped
+    depends_on:
+      hermes-agent:
+        condition: service_healthy
+    environment:
+      # Coolify routet Proxy + TLS auf Port 3000 und generiert die Domain
+      - SERVICE_FQDN_HERMESWORKSPACE_3000
+      - HERMES_HOME=/home/workspace/.hermes
+      - HERMES_WORKSPACE_DIR=/workspace
+      - HERMES_API_URL=http://hermes-agent:8642
+      - HERMES_DASHBOARD_URL=http://hermes-agent:9119
+      # Muss mit API_SERVER_KEY des Agents übereinstimmen (gleicher Platzhalter)
+      - HERMES_API_TOKEN=${SERVICE_PASSWORD_64_HERMESAPI}
+      # Workspace-UI-Passwort (Pflicht bei Remote-Deployment) — auto-generiert
+      - HERMES_PASSWORD=${SERVICE_PASSWORD_WORKSPACE}
+      # Hinter Coolifys HTTPS-Proxy:
+      - COOKIE_SECURE=1
+      - TRUST_PROXY=1
+    volumes:
+      # Geteiltes Agent-Home (config/sessions/skills/profiles) + Workspace-Dateien
+      - hermes-agent-data:/home/workspace/.hermes
+      - hermes-workspace-files:/workspace
+
+volumes:
+  hermes-agent-data:
+  hermes-workspace-files:
